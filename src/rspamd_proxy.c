@@ -150,14 +150,17 @@ struct rspamd_proxy_ctx {
 	char *spam_header;
 	/* CA name that can be used for client certificates */
 	char *client_ca_name;
-	/* Milter rejection message */
+	/* Milter messages */
 	char *reject_message;
+	char *quarantine_message;
+	char *tempfail_message;
 	/* Sessions cache */
 	void *sessions_cache;
 	struct rspamd_milter_context milter_ctx;
 	/* Language detector */
 	struct rspamd_lang_detector *lang_det;
 	double task_timeout;
+	struct rspamd_main *srv;
 };
 
 enum rspamd_backend_flags {
@@ -874,6 +877,22 @@ init_rspamd_proxy(struct rspamd_config *cfg)
 									  G_STRUCT_OFFSET(struct rspamd_proxy_ctx, reject_message),
 									  0,
 									  "Use custom rejection message");
+	rspamd_rcl_register_worker_option(cfg,
+									  type,
+									  "quarantine_message",
+									  rspamd_rcl_parse_struct_string,
+									  ctx,
+									  G_STRUCT_OFFSET(struct rspamd_proxy_ctx, quarantine_message),
+									  0,
+									  "Use custom quarantine message");
+	rspamd_rcl_register_worker_option(cfg,
+									  type,
+									  "tempfail_message",
+									  rspamd_rcl_parse_struct_string,
+									  ctx,
+									  G_STRUCT_OFFSET(struct rspamd_proxy_ctx, tempfail_message),
+									  0,
+									  "Use custom tempfail message");
 
 	return ctx;
 }
@@ -1716,6 +1735,8 @@ rspamd_proxy_scan_self_reply(struct rspamd_task *task)
 	int out_type = UCL_EMIT_JSON_COMPACT;
 	const char *ctype = "application/json";
 	const rspamd_ftok_t *accept_hdr = rspamd_task_get_request_header(task, "Accept");
+	rspamd_fstring_t *output;
+	struct rspamd_stat stat_copy;
 
 	if (accept_hdr && rspamd_substring_search(accept_hdr->begin, accept_hdr->len,
 											  "application/msgpack", sizeof("application/msgpack") - 1) != -1) {
@@ -1740,6 +1761,13 @@ rspamd_proxy_scan_self_reply(struct rspamd_task *task)
 	case CMD_PING:
 		rspamd_http_message_set_body(msg, "pong" CRLF, 6);
 		ctype = "text/plain";
+		break;
+	case CMD_METRICS:
+		memcpy(&stat_copy, session->ctx->srv->stat, sizeof(stat_copy));
+		output = rspamd_metrics_to_prometheus_string(
+			rspamd_worker_metrics_object(task->cfg, &stat_copy, ev_time() - session->ctx->srv->start_time));
+		rspamd_http_message_set_body_from_fstring_steal(msg, output);
+		ctype = "application/openmetrics-text; version=1.0.0; charset=utf-8";
 		break;
 	default:
 		msg_err_task("BROKEN");
@@ -1869,8 +1897,6 @@ rspamd_proxy_self_scan(struct rspamd_proxy_session *session)
 
 	task->fin_arg = session;
 	task->resolver = session->ctx->resolver;
-	/* TODO: allow to disable autolearn in protocol */
-	task->flags |= RSPAMD_TASK_FLAG_LEARN_AUTO;
 	task->s = rspamd_session_create(task->task_pool, rspamd_proxy_task_fin,
 									NULL, (event_finalizer_t) rspamd_task_free, task);
 	data = rspamd_http_message_get_body(msg, &len);
@@ -1887,7 +1913,7 @@ rspamd_proxy_self_scan(struct rspamd_proxy_session *session)
 		task->flags |= RSPAMD_TASK_FLAG_SKIP;
 	}
 	else {
-		if (task->cmd == CMD_PING) {
+		if (task->cmd == CMD_PING || task->cmd == CMD_METRICS) {
 			task->flags |= RSPAMD_TASK_FLAG_SKIP;
 		}
 		else {
@@ -2396,6 +2422,7 @@ start_rspamd_proxy(struct rspamd_worker *worker)
 
 	g_assert(rspamd_worker_check_context(worker->ctx, rspamd_rspamd_proxy_magic));
 	ctx->cfg = worker->srv->cfg;
+	ctx->srv = worker->srv;
 	ctx->event_loop = rspamd_prepare_worker(worker, "rspamd_proxy",
 											proxy_accept_socket);
 
@@ -2435,6 +2462,8 @@ start_rspamd_proxy(struct rspamd_worker *worker)
 	ctx->milter_ctx.sessions_cache = ctx->sessions_cache;
 	ctx->milter_ctx.client_ca_name = ctx->client_ca_name;
 	ctx->milter_ctx.reject_message = ctx->reject_message;
+	ctx->milter_ctx.quarantine_message = ctx->quarantine_message;
+	ctx->milter_ctx.tempfail_message = ctx->tempfail_message;
 	ctx->milter_ctx.cfg = ctx->cfg;
 	rspamd_milter_init_library(&ctx->milter_ctx);
 

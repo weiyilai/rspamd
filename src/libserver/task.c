@@ -70,7 +70,7 @@ rspamd_task_new(struct rspamd_worker *worker,
 {
 	struct rspamd_task *new_task;
 	rspamd_mempool_t *task_pool;
-	unsigned int flags = 0;
+	unsigned int flags = RSPAMD_TASK_FLAG_LEARN_AUTO;
 
 	if (pool == NULL) {
 		task_pool = rspamd_mempool_new(rspamd_mempool_suggest_size(),
@@ -133,7 +133,7 @@ rspamd_task_reply(struct rspamd_task *task)
 	}
 	else {
 		if (!(task->processed_stages & RSPAMD_TASK_STAGE_REPLIED)) {
-			rspamd_protocol_write_reply(task, write_timeout);
+			rspamd_protocol_write_reply(task, write_timeout, task->worker->srv);
 		}
 	}
 }
@@ -436,86 +436,89 @@ rspamd_task_load_message(struct rspamd_task *task,
 					  fp, shmem_size, offset, fd);
 
 		rspamd_mempool_add_destructor(task->task_pool, rspamd_task_unmapper, m);
-
-		return TRUE;
 	}
+	else {
+		/* Try file */
+		tok = rspamd_task_get_request_header(task, "file");
 
-	tok = rspamd_task_get_request_header(task, "file");
-
-	if (tok == NULL) {
-		tok = rspamd_task_get_request_header(task, "path");
-	}
-
-	if (tok) {
-		debug_task("want to scan file %T", tok);
-
-		r = rspamd_strlcpy(filepath, tok->begin,
-						   MIN(sizeof(filepath), tok->len + 1));
-
-		rspamd_url_decode(filepath, filepath, r + 1);
-		flen = strlen(filepath);
-
-		if (filepath[0] == '"' && flen > 2) {
-			/* We need to unquote filepath */
-			fp = &filepath[1];
-			fp[flen - 2] = '\0';
-		}
-		else {
-			fp = &filepath[0];
+		if (tok == NULL) {
+			tok = rspamd_task_get_request_header(task, "path");
 		}
 
-		if (stat(fp, &st) == -1) {
-			g_set_error(&task->err, rspamd_task_quark(), RSPAMD_PROTOCOL_ERROR,
-						"Invalid file (%s): %s", fp, strerror(errno));
-			return FALSE;
-		}
+		if (tok) {
+			debug_task("want to scan file %T", tok);
 
-		if (G_UNLIKELY(st.st_size == 0)) {
-			/* Empty file */
-			task->flags |= RSPAMD_TASK_FLAG_EMPTY;
-			task->msg.begin = rspamd_mempool_strdup(task->task_pool, "");
-			task->msg.len = 0;
-		}
-		else {
-			fd = open(fp, O_RDONLY);
+			r = rspamd_strlcpy(filepath, tok->begin,
+							   MIN(sizeof(filepath), tok->len + 1));
 
-			if (fd == -1) {
-				g_set_error(&task->err, rspamd_task_quark(),
-							RSPAMD_PROTOCOL_ERROR,
-							"Cannot open file (%s): %s", fp, strerror(errno));
+			rspamd_url_decode(filepath, filepath, r + 1);
+			flen = strlen(filepath);
+
+			if (filepath[0] == '"' && flen > 2) {
+				/* We need to unquote filepath */
+				fp = &filepath[1];
+				fp[flen - 2] = '\0';
+			}
+			else {
+				fp = &filepath[0];
+			}
+
+			if (stat(fp, &st) == -1) {
+				g_set_error(&task->err, rspamd_task_quark(), RSPAMD_PROTOCOL_ERROR,
+							"Invalid file (%s): %s", fp, strerror(errno));
 				return FALSE;
 			}
 
-			map = mmap(NULL, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
+			if (G_UNLIKELY(st.st_size == 0)) {
+				/* Empty file */
+				task->flags |= RSPAMD_TASK_FLAG_EMPTY;
+				task->msg.begin = rspamd_mempool_strdup(task->task_pool, "");
+				task->msg.len = 0;
+			}
+			else {
+				fd = open(fp, O_RDONLY);
+
+				if (fd == -1) {
+					g_set_error(&task->err, rspamd_task_quark(),
+								RSPAMD_PROTOCOL_ERROR,
+								"Cannot open file (%s): %s", fp, strerror(errno));
+					return FALSE;
+				}
+
+				map = mmap(NULL, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
 
 
-			if (map == MAP_FAILED) {
-				close(fd);
-				g_set_error(&task->err, rspamd_task_quark(),
-							RSPAMD_PROTOCOL_ERROR,
-							"Cannot mmap file (%s): %s", fp, strerror(errno));
-				return FALSE;
+				if (map == MAP_FAILED) {
+					close(fd);
+					g_set_error(&task->err, rspamd_task_quark(),
+								RSPAMD_PROTOCOL_ERROR,
+								"Cannot mmap file (%s): %s", fp, strerror(errno));
+					return FALSE;
+				}
+
+				task->msg.begin = map;
+				task->msg.len = st.st_size;
+				m = rspamd_mempool_alloc(task->task_pool, sizeof(*m));
+				m->begin = map;
+				m->len = st.st_size;
+				m->fd = fd;
+
+				rspamd_mempool_add_destructor(task->task_pool, rspamd_task_unmapper, m);
 			}
 
-			task->msg.begin = map;
-			task->msg.len = st.st_size;
-			m = rspamd_mempool_alloc(task->task_pool, sizeof(*m));
-			m->begin = map;
-			m->len = st.st_size;
-			m->fd = fd;
+			task->msg.fpath = rspamd_mempool_strdup(task->task_pool, fp);
+			task->flags |= RSPAMD_TASK_FLAG_FILE;
 
-			rspamd_mempool_add_destructor(task->task_pool, rspamd_task_unmapper, m);
+			msg_info_task("loaded message from file %s", fp);
 		}
-
-		task->msg.fpath = rspamd_mempool_strdup(task->task_pool, fp);
-		task->flags |= RSPAMD_TASK_FLAG_FILE;
-
-		msg_info_task("loaded message from file %s", fp);
-
-		return TRUE;
+		else {
+			/* Plain data */
+			task->msg.begin = start;
+			task->msg.len = len;
+		}
 	}
 
-	/* Plain data */
+
 	debug_task("got input of length %z", task->msg.len);
 
 	/* Check compression */
@@ -573,10 +576,10 @@ rspamd_task_load_message(struct rspamd_task *task,
 			zstream = task->cfg->libs_ctx->in_zstream;
 
 			zin.pos = 0;
-			zin.src = start;
-			zin.size = len;
+			zin.src = task->msg.begin;
+			zin.size = task->msg.len;
 
-			if ((outlen = ZSTD_getDecompressedSize(start, len)) == 0) {
+			if ((outlen = ZSTD_getDecompressedSize(task->msg.begin, task->msg.len)) == 0) {
 				outlen = ZSTD_DStreamOutSize();
 			}
 
@@ -617,10 +620,6 @@ rspamd_task_load_message(struct rspamd_task *task,
 						"Invalid compression method");
 			return FALSE;
 		}
-	}
-	else {
-		task->msg.begin = start;
-		task->msg.len = len;
 	}
 
 	if (task->msg.len == 0) {
@@ -758,6 +757,10 @@ rspamd_task_process(struct rspamd_task *task, unsigned int stages)
 	case RSPAMD_TASK_STAGE_POST_FILTERS:
 		all_done = rspamd_symcache_process_symbols(task, task->cfg->cache,
 												   st);
+
+		if (all_done) {
+			rspamd_task_result_adjust_grow_factor(task, task->result, task->cfg->grow_factor);
+		}
 
 		if (all_done && (task->flags & RSPAMD_TASK_FLAG_LEARN_AUTO) &&
 			!RSPAMD_TASK_IS_EMPTY(task) &&
@@ -953,6 +956,9 @@ rspamd_learn_task_spam(struct rspamd_task *task,
 					   const char *classifier,
 					   GError **err)
 {
+	/* Disable learn auto flag to avoid bad learn codes */
+	task->flags &= ~RSPAMD_TASK_FLAG_LEARN_AUTO;
+
 	if (is_spam) {
 		task->flags |= RSPAMD_TASK_FLAG_LEARN_SPAM;
 	}

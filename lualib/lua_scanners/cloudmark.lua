@@ -89,6 +89,20 @@ local function cloudmark_preload(rule, cfg, ev_base, _)
   })
 end
 
+local function numerify(d)
+  local l = {}
+  for k in pairs(d) do
+    table.insert(l, k)
+  end
+  for _, k in ipairs(l) do
+    local new_key = tonumber(k)
+    if new_key then
+      d[new_key] = d[k]
+      d[k] = nil
+    end
+  end
+end
+
 local function cloudmark_config(opts)
 
   local cloudmark_conf = {
@@ -109,10 +123,16 @@ local function cloudmark_config(opts)
     symbol_fail = 'CLOUDMARK_FAIL',
     symbol = 'CLOUDMARK_CHECK',
     symbol_spam = 'CLOUDMARK_SPAM',
+    add_score_header = false, -- Add X-CMAE-Score header
     add_headers = false, -- allow addition of the headers from Cloudmark
+    scores_symbols = nil, -- a table with match { [score_threshold] = symbol, ... }
   }
 
   cloudmark_conf = lua_util.override_defaults(cloudmark_conf, opts)
+
+  if type(cloudmark_conf.scores_symbols) == 'table' then
+    numerify(cloudmark_conf.scores_symbols)
+  end
 
   if not cloudmark_conf.prefix then
     cloudmark_conf.prefix = 'rs_' .. cloudmark_conf.name .. '_'
@@ -200,6 +220,30 @@ local function table_to_multipart_body(tbl, boundary)
   return out
 end
 
+local function get_specific_symbol(scores_symbols, score)
+  local selected
+  local sel_thr = -1
+
+  for threshold, sym in pairs(scores_symbols) do
+    if sel_thr < threshold and threshold <= score then
+      selected = sym
+      sel_thr = threshold
+    end
+  end
+
+  return selected
+end
+
+assert(get_specific_symbol({ [90] = 'CLOUDMARK_SPAM' }, 100) == 'CLOUDMARK_SPAM')
+assert(get_specific_symbol({ [90] = 'CLOUDMARK_SPAM' }, 80) == nil)
+assert(get_specific_symbol({ [90] = 'CLOUDMARK_SPAM', [80] = 'CLOUDMARK_SPAM2' }, 100) == 'CLOUDMARK_SPAM')
+assert(get_specific_symbol({ [90] = 'CLOUDMARK_SPAM', [80] = 'CLOUDMARK_SPAM2' }, 80) == 'CLOUDMARK_SPAM2')
+assert(get_specific_symbol({ [90] = 'CLOUDMARK_SPAM', [80] = 'CLOUDMARK_SPAM2' }, 70) == nil)
+assert(get_specific_symbol({ [90] = 'CLOUDMARK_SPAM', [80] = 'CLOUDMARK_SPAM2' }, 90) == 'CLOUDMARK_SPAM')
+assert(get_specific_symbol({ }, 80) == nil)
+assert(get_specific_symbol({ [100] = 'CLOUDMARK_SPAM' }, 100) == 'CLOUDMARK_SPAM')
+assert(get_specific_symbol({ [0] = 'CLOUDMARK_SPAM' }, 0) == 'CLOUDMARK_SPAM')
+
 local function parse_cloudmark_reply(task, rule, body)
   local parser = ucl.parser()
   local ret, err = parser:parse_string(body)
@@ -236,6 +280,24 @@ local function parse_cloudmark_reply(task, rule, body)
     lua_mime.modify_headers(task, {
       add = headers_add
     })
+  end
+
+  if rule.add_score_header then
+    lua_mime.modify_headers(task, {
+      add = {
+        ['X-CMAE-Score'] = {
+          order = 1,
+          value = tostring(score)
+        }
+      }
+    })
+  end
+
+  if type(rule.scores_symbols) == 'table' then
+    local sym = get_specific_symbol(rule.scores_symbols, score)
+    if sym then
+      task:insert_result(sym, 1.0, tostring(score))
+    end
   end
 
 end

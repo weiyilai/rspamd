@@ -872,6 +872,14 @@ LUA_FUNCTION_DEF(task, get_metric_result);
  * @return {number,number} 2 numbers containing the current score and required score of the metric
  */
 LUA_FUNCTION_DEF(task, get_metric_score);
+
+/***
+ * @method task:get_metric_threshold(action)
+ * Get the current threshold of the action `action` for the default metric. Should be used after settings have been applied.
+ * @param {string} action name of a action
+ * @return {number} the current threshold of the action
+ */
+LUA_FUNCTION_DEF(task, get_metric_threshold);
 /***
  * @method task:get_metric_action(name)
  * Get the current action of metric `name` (must be nil or 'default'). Should be used in idempotent filters only.
@@ -1307,6 +1315,7 @@ static const struct luaL_reg tasklib_m[] = {
 	LUA_INTERFACE_DEF(task, get_metric_result),
 	LUA_INTERFACE_DEF(task, get_metric_score),
 	LUA_INTERFACE_DEF(task, get_metric_action),
+	LUA_INTERFACE_DEF(task, get_metric_threshold),
 	LUA_INTERFACE_DEF(task, set_metric_score),
 	LUA_INTERFACE_DEF(task, set_metric_subject),
 	LUA_INTERFACE_DEF(task, learn),
@@ -2625,6 +2634,53 @@ lua_task_has_urls(lua_State *L)
 	return 2;
 }
 
+struct rspamd_url_query_to_inject_cbd {
+	struct rspamd_task *task;
+	struct rspamd_url *url;
+	GPtrArray *mpart_urls;
+};
+
+static gboolean
+inject_url_query_callback(struct rspamd_url *url, gsize start_offset,
+						gsize end_offset, gpointer ud)
+{
+	struct rspamd_url_query_to_inject_cbd *cbd =
+		(struct rspamd_url_query_to_inject_cbd *) ud;
+	struct rspamd_task *task;
+
+	task = cbd->task;
+
+	url->flags |= RSPAMD_URL_FLAG_QUERY;
+
+	if (rspamd_url_set_add_or_increase(MESSAGE_FIELD(task, urls), url, false) && cbd->mpart_urls) {
+		g_ptr_array_add(cbd->mpart_urls, url);
+	}
+
+	return TRUE;
+}
+
+static void
+inject_url_query(struct rspamd_task *task, struct rspamd_url *url,
+					   GPtrArray *part_urls)
+{
+	if (url->querylen > 0) {
+		struct rspamd_url_query_to_inject_cbd cbd;
+
+		cbd.task = task;
+		cbd.url = url;
+		cbd.mpart_urls = part_urls;
+
+		rspamd_url_find_multiple(task->task_pool,
+								 rspamd_url_query_unsafe(url), url->querylen,
+								 RSPAMD_URL_FIND_ALL, NULL,
+								 inject_url_query_callback, &cbd);
+	}
+
+	if (part_urls) {
+		g_ptr_array_add(part_urls, url);
+	}
+}
+
 static int
 lua_task_inject_url(lua_State *L)
 {
@@ -2635,15 +2691,13 @@ lua_task_inject_url(lua_State *L)
 
 	if (lua_isuserdata(L, 3)) {
 		/* We also have a mime part there */
-		mpart = *((struct rspamd_mime_part **) rspamd_lua_check_udata_maybe(L,
-																			3, rspamd_mimepart_classname));
+		mpart = *((struct rspamd_mime_part **)
+							   rspamd_lua_check_udata_maybe(L, 3, rspamd_mimepart_classname));
 	}
-
 	if (task && task->message && url && url->url) {
 		if (rspamd_url_set_add_or_increase(MESSAGE_FIELD(task, urls), url->url, false)) {
-			if (mpart && mpart->urls) {
-				/* Also add url to the mime part */
-				g_ptr_array_add(mpart->urls, url->url);
+			if(mpart && mpart->urls) {
+				inject_url_query(task, url->url, mpart->urls);
 			}
 		}
 	}
@@ -6343,6 +6397,38 @@ lua_task_get_metric_action(lua_State *L)
 
 		action = rspamd_check_action_metric(task, NULL, mres);
 		lua_pushstring(L, action->name);
+	}
+	else {
+		return luaL_error(L, "invalid arguments");
+	}
+
+	return 1;
+}
+
+static int
+lua_task_get_metric_threshold(lua_State *L)
+{
+	LUA_TRACE_POINT;
+	struct rspamd_task *task = lua_check_task(L, 1);
+	const char *act_name = luaL_checkstring(L, 2);
+
+	if (task && act_name && task->result) {
+		struct rspamd_action *action = rspamd_config_get_action(task->cfg, act_name);
+
+		if (action == NULL) {
+			lua_pushnil(L);
+		}
+		else {
+			struct rspamd_action_config *act_config =
+				rspamd_find_action_config_for_action(task->result, action);
+
+			if (act_config) {
+				lua_pushnumber(L, act_config->cur_limit);
+			}
+			else {
+				lua_pushnil(L);
+			}
+		}
 	}
 	else {
 		return luaL_error(L, "invalid arguments");
