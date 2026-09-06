@@ -23,6 +23,7 @@
 #include <unicode/coll.h>
 #include <unicode/translit.h>
 #include <unicode/uspoof.h>
+#include <array>
 #include <utility>
 #include <tuple>
 #include <string>
