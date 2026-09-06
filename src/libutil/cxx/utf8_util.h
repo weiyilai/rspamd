@@ -22,6 +22,8 @@
 #include "config.h"
 #include "mem_pool.h"
 
+struct rspamd_unicode_spoof_checker;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -77,6 +79,37 @@ int rspamd_utf8_strcmp(const char *s1, const char *s2, gsize n);
  * @return
  */
 int rspamd_utf8_strcmp_sizes(const char *s1, gsize n1, const char *s2, gsize n2);
+
+enum rspamd_unicode_spoof_flags {
+	RSPAMD_UNICODE_SPOOF_NONE = 0,
+	RSPAMD_UNICODE_SPOOF_RESTRICTION = (1 << 0),
+	RSPAMD_UNICODE_SPOOF_INVISIBLE = (1 << 1),
+	RSPAMD_UNICODE_SPOOF_MIXED_NUMBERS = (1 << 2),
+};
+
+/**
+ * Create an immutable ICU spoof checker using the Highly Restrictive profile.
+ * The returned checker can be shared by concurrent readers.
+ */
+struct rspamd_unicode_spoof_checker *rspamd_unicode_spoof_checker_create(void);
+
+/** Destroy a checker created by rspamd_unicode_spoof_checker_create. */
+void rspamd_unicode_spoof_checker_destroy(void *checker);
+
+/**
+ * Check a UTF-8 identifier. Returns rspamd_unicode_spoof_flags, or -1 on error.
+ */
+int rspamd_unicode_spoof_check(const struct rspamd_unicode_spoof_checker *checker,
+							   const char *start, gsize len);
+
+/**
+ * Generate the UTS #39 confusable skeleton for a UTF-8 identifier.
+ * Returns the complete output length, or -1 on error. A too-small destination
+ * is reported by returning the required length.
+ */
+gssize rspamd_unicode_spoof_skeleton(const struct rspamd_unicode_spoof_checker *checker,
+									 const char *start, gsize len,
+									 char *dest, gsize dest_capacity);
 
 #ifdef __cplusplus
 }

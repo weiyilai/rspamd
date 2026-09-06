@@ -2541,6 +2541,26 @@ void rspamd_lua_push_full_word(lua_State *L, rspamd_word_t *w)
 		lua_pushstring(L, "stemmed");
 		lua_rawseti(L, -2, fl_cnt++);
 	}
+	if (w->flags & RSPAMD_STAT_TOKEN_FLAG_MIXED_SCRIPT) {
+		lua_pushstring(L, "mixed_script");
+		lua_rawseti(L, -2, fl_cnt++);
+	}
+	if (w->flags & RSPAMD_STAT_TOKEN_FLAG_UNICODE_SPOOF) {
+		lua_pushstring(L, "unicode_spoof");
+		lua_rawseti(L, -2, fl_cnt++);
+	}
+	if (w->flags & RSPAMD_STAT_TOKEN_FLAG_CONFUSABLE_CANDIDATE) {
+		lua_pushstring(L, "confusable_candidate");
+		lua_rawseti(L, -2, fl_cnt++);
+	}
+	if (w->flags & RSPAMD_STAT_TOKEN_FLAG_INVISIBLE) {
+		lua_pushstring(L, "invisible");
+		lua_rawseti(L, -2, fl_cnt++);
+	}
+	if (w->flags & RSPAMD_STAT_TOKEN_FLAG_MIXED_NUMBERS) {
+		lua_pushstring(L, "mixed_numbers");
+		lua_rawseti(L, -2, fl_cnt++);
+	}
 
 	lua_rawseti(L, -2, 4);
 }
