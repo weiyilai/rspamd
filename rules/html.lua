@@ -194,6 +194,7 @@ local vis_check_id = rspamd_config:register_symbol {
     local transp_rate = 0
     local invisible_blocks = 0
     local zero_size_blocks = 0
+    local hidden_chars = 0
     local arg
 
     local normal_len = 0
@@ -205,6 +206,13 @@ local vis_check_id = rspamd_config:register_symbol {
       if p:is_html() and p:get_html() then
         -- if the current part is html part
         local hc = p:get_html() -- we get HTML context
+
+        -- Count decoded hidden content once, including non-leaf elements. Stop
+        -- at the full-score limit and exclude spacing/preheader padding.
+        if hidden_chars < 500 then
+          hidden_chars = hidden_chars + hidden_text_re:matchn(
+              hc:get_invisible(), 500 - hidden_chars)
+        end
 
         hc:foreach_tag({ 'font', 'span', 'div', 'p', 'td' }, function(tag, clen, is_leaf)
           local bl = tag:get_style()
@@ -259,6 +267,10 @@ local vis_check_id = rspamd_config:register_symbol {
       end
     end
 
+    if hidden_chars >= 200 then
+      task:insert_result('HIDDEN_TEXT', hidden_chars / 500, tostring(hidden_chars))
+    end
+
     if invisible_blocks > 0 then
       if invisible_blocks > 10 then
         invisible_blocks = 10
@@ -303,6 +315,16 @@ local vis_check_id = rspamd_config:register_symbol {
       end
     end
   end,
+}
+
+rspamd_config:register_symbol {
+  type = 'virtual',
+  parent = vis_check_id,
+  name = 'HIDDEN_TEXT',
+  description = 'Significant amount of hidden text',
+  score = 5.0,
+  group = 'html',
+  one_shot = true,
 }
 
 rspamd_config:register_symbol {

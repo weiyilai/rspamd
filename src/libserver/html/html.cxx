@@ -3152,7 +3152,10 @@ auto html_process_input(struct rspamd_task *task,
 			}
 		}
 		if (tag->block) {
-			if (!tag->block->has_display()) {
+			/* Preserve inherited display:none when assigning tag defaults. */
+			if (!tag->block->has_display() &&
+				!(tag->block->has_display(html_block::inherited) &&
+				  tag->block->display == css::css_display_value::DISPLAY_HIDDEN)) {
 				/* If we have no display field, we can check it by tag */
 				if (tag->flags & CM_HEAD) {
 					tag->block->set_display(css::css_display_value::DISPLAY_HIDDEN,

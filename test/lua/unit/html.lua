@@ -126,6 +126,34 @@ context("HTML processing", function()
     return parsed, tags
   end
 
+  test("Hidden display survives descendant tag defaults", function()
+    local pool = require("rspamd_mempool").create()
+    local parsed, tags = parse_html_and_extract_tags(
+        '<div style="display:none">one<strong>two<em style="display:block">three</em></strong>four</div>', pool)
+
+    assert_equal('onetwothreefour', tostring(parsed:get_invisible()))
+    for _, tag in ipairs(tags) do
+      if tag:get_type() == 'strong' or tag:get_type() == 'em' then
+        assert_false(tag:get_style().visible)
+      end
+    end
+    pool:destroy()
+  end)
+
+  test("A child can restore font size inside a zero-font parent", function()
+    local pool = require("rspamd_mempool").create()
+    local parsed, tags = parse_html_and_extract_tags(
+        '<div style="font-size:0">hidden<strong style="font-size:16px">visible</strong></div>', pool)
+
+    assert_equal('hidden', tostring(parsed:get_invisible()))
+    for _, tag in ipairs(tags) do
+      if tag:get_type() == 'strong' then
+        assert_true(tag:get_style().visible)
+      end
+    end
+    pool:destroy()
+  end)
+
   test("HTML tag get_all_attributes basic test", function()
     local rspamd_mempool = require("rspamd_mempool")
     local pool = rspamd_mempool.create()
