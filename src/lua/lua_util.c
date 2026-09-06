@@ -22,6 +22,7 @@
 #include "libmime/mime_headers.h"
 #include "libutil/hash.h"
 #include "libutil/str_util.h"
+#include "libutil/cxx/utf8_util.h"
 #include <zlib.h> /* for crc32() */
 #include "libserver/html/html.h"
 #include "libserver/hyperscan_tools.h"
@@ -513,6 +514,13 @@ LUA_FUNCTION_DEF(util, normalize_prob);
  */
 LUA_FUNCTION_DEF(util, is_utf_spoofed);
 
+/***
+ * @function util.utf8_confusable_skeleton(str)
+ * Returns the UTS #39 confusable skeleton for a UTF-8 string.
+ * @return {string} confusable skeleton
+ */
+LUA_FUNCTION_DEF(util, utf8_confusable_skeleton);
+
 /**
 * @function util.is_utf_mixed_script(str)
 * Returns true if a string contains mixed unicode scripts
@@ -853,6 +861,7 @@ static const struct luaL_reg utillib_f[] = {
 	LUA_INTERFACE_DEF(util, caseless_hash_fast),
 	LUA_INTERFACE_DEF(util, crc32),
 	LUA_INTERFACE_DEF(util, is_utf_spoofed),
+	LUA_INTERFACE_DEF(util, utf8_confusable_skeleton),
 	LUA_INTERFACE_DEF(util, is_utf_mixed_script),
 	LUA_INTERFACE_DEF(util, is_utf_outside_range),
 	LUA_INTERFACE_DEF(util, get_string_stats),
@@ -2592,6 +2601,49 @@ lua_util_is_utf_spoofed(lua_State *L)
 	}
 
 	return nres;
+}
+
+static int
+lua_util_utf8_confusable_skeleton(lua_State *L)
+{
+	LUA_TRACE_POINT;
+	struct rspamd_lua_text *t = lua_check_text_or_string(L, 1);
+	static struct rspamd_unicode_spoof_checker *checker;
+	gssize skeleton_len;
+	char *skeleton;
+
+	if (t == NULL || t->start == NULL) {
+		return luaL_error(L, "invalid arguments");
+	}
+
+	if (checker == NULL) {
+		checker = rspamd_unicode_spoof_checker_create();
+		if (checker == NULL) {
+			return luaL_error(L, "cannot init spoof checker");
+		}
+	}
+
+	skeleton_len = rspamd_unicode_spoof_skeleton(checker, t->start, t->len,
+												 NULL, 0);
+	if (skeleton_len < 0) {
+		return luaL_error(L, "cannot create confusable skeleton");
+	}
+	if (skeleton_len == 0) {
+		lua_pushliteral(L, "");
+		return 1;
+	}
+
+	skeleton = g_malloc(skeleton_len);
+	if (rspamd_unicode_spoof_skeleton(checker, t->start, t->len,
+									  skeleton, skeleton_len) != skeleton_len) {
+		g_free(skeleton);
+		return luaL_error(L, "cannot create confusable skeleton");
+	}
+
+	lua_pushlstring(L, skeleton, skeleton_len);
+	g_free(skeleton);
+
+	return 1;
 }
 
 static int

@@ -22,6 +22,7 @@
 #include <unicode/schriter.h>
 #include <unicode/coll.h>
 #include <unicode/translit.h>
+#include <unicode/uspoof.h>
 #include <utility>
 #include <tuple>
 #include <string>
@@ -33,6 +34,97 @@
 
 #define DOCTEST_CONFIG_IMPLEMENTATION_IN_DLL
 #include "doctest/doctest.h"
+
+struct rspamd_unicode_spoof_checker {
+	USpoofChecker *impl = nullptr;
+};
+
+struct rspamd_unicode_spoof_checker *
+rspamd_unicode_spoof_checker_create(void)
+{
+	auto *checker = new rspamd_unicode_spoof_checker;
+	auto uc_err = U_ZERO_ERROR;
+
+	checker->impl = uspoof_open(&uc_err);
+	if (U_FAILURE(uc_err)) {
+		delete checker;
+		return nullptr;
+	}
+
+	uspoof_setRestrictionLevel(checker->impl, USPOOF_HIGHLY_RESTRICTIVE);
+	uspoof_setChecks(checker->impl,
+					 USPOOF_RESTRICTION_LEVEL | USPOOF_INVISIBLE | USPOOF_MIXED_NUMBERS,
+					 &uc_err);
+	if (U_FAILURE(uc_err)) {
+		uspoof_close(checker->impl);
+		delete checker;
+		return nullptr;
+	}
+
+	return checker;
+}
+
+void rspamd_unicode_spoof_checker_destroy(void *p)
+{
+	auto *checker = static_cast<rspamd_unicode_spoof_checker *>(p);
+
+	if (checker != nullptr) {
+		if (checker->impl != nullptr) {
+			uspoof_close(checker->impl);
+		}
+		delete checker;
+	}
+}
+
+int rspamd_unicode_spoof_check(const struct rspamd_unicode_spoof_checker *checker,
+							   const char *start, gsize len)
+{
+	if (checker == nullptr || checker->impl == nullptr || start == nullptr ||
+		len > INT32_MAX) {
+		return -1;
+	}
+
+	auto uc_err = U_ZERO_ERROR;
+	auto ret = uspoof_checkUTF8(checker->impl, start, static_cast<int32_t>(len),
+								nullptr, &uc_err);
+	if (U_FAILURE(uc_err)) {
+		return -1;
+	}
+
+	int flags = RSPAMD_UNICODE_SPOOF_NONE;
+	if (ret & USPOOF_RESTRICTION_LEVEL) {
+		flags |= RSPAMD_UNICODE_SPOOF_RESTRICTION;
+	}
+	if (ret & USPOOF_INVISIBLE) {
+		flags |= RSPAMD_UNICODE_SPOOF_INVISIBLE;
+	}
+	if (ret & USPOOF_MIXED_NUMBERS) {
+		flags |= RSPAMD_UNICODE_SPOOF_MIXED_NUMBERS;
+	}
+
+	return flags;
+}
+
+gssize
+rspamd_unicode_spoof_skeleton(const struct rspamd_unicode_spoof_checker *checker,
+							  const char *start, gsize len,
+							  char *dest, gsize dest_capacity)
+{
+	if (checker == nullptr || checker->impl == nullptr || start == nullptr ||
+		len > INT32_MAX || dest_capacity > INT32_MAX) {
+		return -1;
+	}
+
+	auto uc_err = U_ZERO_ERROR;
+	auto ret = uspoof_getSkeletonUTF8(checker->impl, 0, start,
+									  static_cast<int32_t>(len), dest,
+									  static_cast<int32_t>(dest_capacity), &uc_err);
+	if (U_FAILURE(uc_err) && uc_err != U_BUFFER_OVERFLOW_ERROR) {
+		return -1;
+	}
+
+	return ret;
+}
 
 const char *
 rspamd_string_unicode_trim_inplace(const char *str, size_t *len)
@@ -417,5 +509,38 @@ TEST_SUITE("utf8 utils")
 				CHECK(strcmp(s2, ret) == 0);
 			}
 		}
+	}
+
+	TEST_CASE("unicode spoof checks and skeletons")
+	{
+		auto *checker = rspamd_unicode_spoof_checker_create();
+		REQUIRE(checker != nullptr);
+
+		const auto mixed = std::string_view{"аpple"};
+		CHECK((rspamd_unicode_spoof_check(checker, mixed.data(), mixed.size()) &
+			   RSPAMD_UNICODE_SPOOF_RESTRICTION) != 0);
+
+		const auto mixed_numbers = std::string_view{"1١"};
+		CHECK((rspamd_unicode_spoof_check(checker, mixed_numbers.data(),
+										  mixed_numbers.size()) &
+			   RSPAMD_UNICODE_SPOOF_MIXED_NUMBERS) != 0);
+
+		const auto japanese = std::string_view{"日本語"};
+		CHECK(rspamd_unicode_spoof_check(checker, japanese.data(), japanese.size()) ==
+			  RSPAMD_UNICODE_SPOOF_NONE);
+
+		const auto invisible = std::string_view{"ä̈"};
+		CHECK((rspamd_unicode_spoof_check(checker, invisible.data(), invisible.size()) &
+			   RSPAMD_UNICODE_SPOOF_INVISIBLE) != 0);
+
+		const auto homograph = std::string_view{"раура"};
+		std::array<char, 32> skeleton;
+		const auto skeleton_len = rspamd_unicode_spoof_skeleton(
+			checker, homograph.data(), homograph.size(), skeleton.data(), skeleton.size());
+		REQUIRE(skeleton_len > 0);
+		CHECK(std::string_view{skeleton.data(), static_cast<std::size_t>(skeleton_len)} ==
+			  "paypa");
+
+		rspamd_unicode_spoof_checker_destroy(checker);
 	}
 }
