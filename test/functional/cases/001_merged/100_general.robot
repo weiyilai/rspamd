@@ -56,6 +56,30 @@ EMAILS DETECTION ZEROFONT
   Expect Symbol  MANY_INVISIBLE_PARTS
   Expect Symbol  ZERO_FONT
 
+HTML VISIBILITY - Layout whitespace
+  Scan File  ${RSPAMD_TESTDIR}/messages/html_visibility_layout.eml
+  ...  Settings={symbols_enabled = [MANY_INVISIBLE_PARTS, ZERO_FONT, R_WHITE_ON_WHITE]}
+  Do Not Expect Symbol  ZERO_FONT
+  Do Not Expect Symbol  MANY_INVISIBLE_PARTS
+  Do Not Expect Symbol  R_WHITE_ON_WHITE
+
+HTML VISIBILITY - Preview and dividers
+  Scan File  ${RSPAMD_TESTDIR}/messages/html_visibility_preview.eml
+  ...  Settings={symbols_enabled = [MANY_INVISIBLE_PARTS, ZERO_FONT]}
+  Expect Symbol With Score And Exact Options  ZERO_FONT  0.1  1
+  Expect Symbol With Score And Exact Options  MANY_INVISIBLE_PARTS  0.05  1
+
+HTML VISIBILITY - Hidden text with padding
+  Scan File  ${RSPAMD_TESTDIR}/messages/html_visibility_hidden.eml
+  ...  Settings={symbols_enabled = [MANY_INVISIBLE_PARTS, ZERO_FONT]}
+  Expect Symbol With Score And Exact Options  ZERO_FONT  0.2  2
+  Expect Symbol With Score And Exact Options  MANY_INVISIBLE_PARTS  0.2  3
+
+HTML VISIBILITY - Transparent text
+  Scan File  ${RSPAMD_TESTDIR}/messages/html_visibility_transparent.eml
+  ...  Settings={symbols_enabled = [MANY_INVISIBLE_PARTS, R_WHITE_ON_WHITE]}
+  Expect Symbol With Score And Exact Options  MANY_INVISIBLE_PARTS  0.05  1
+
 HTML ONLY - TRUE POSITIVE
   Scan File  ${RSPAMD_TESTDIR}/messages/zerofont.eml
   ...  Settings={symbols_enabled = [MIME_HTML_ONLY]}

@@ -179,6 +179,10 @@ rspamd_config.R_SUSPICIOUS_IMAGES = {
   description = 'Message has high image to text ratio'
 }
 
+-- Ignore layout whitespace and invisible characters used to pad inbox previews.
+local hidden_text_re = rspamd_regexp.create_cached(
+    '/[^\\s\\p{Z}\\x{00ad}\\x{034f}\\x{200b}-\\x{200d}\\x{2060}\\x{feff}]/u')
+
 local vis_check_id = rspamd_config:register_symbol {
   name = 'HTML_VISIBLE_CHECKS',
   type = 'callback',
@@ -204,18 +208,20 @@ local vis_check_id = rspamd_config:register_symbol {
 
         hc:foreach_tag({ 'font', 'span', 'div', 'p', 'td' }, function(tag, clen, is_leaf)
           local bl = tag:get_style()
-          if bl then
-            if not bl.visible and clen > 0 and is_leaf then
+          -- Transparent text is replaced with spaces by the HTML parser.
+          if bl and is_leaf and (bl.transparent or
+              (clen > 0 and (not bl.visible or bl.font_size == 0) and
+                  hidden_text_re:match(tag:get_content()))) then
+            if not bl.visible or bl.transparent then
               invisible_blocks = invisible_blocks + 1
             end
 
-            if (bl.font_size or 12) == 0 and clen > 0 and is_leaf then
+            if (bl.font_size or 12) == 0 and clen > 0 then
               zero_size_blocks = zero_size_blocks + 1
             end
 
-            if bl.transparent and is_leaf then
+            if bl.transparent then
               ret = true
-              invisible_blocks = invisible_blocks + 1 -- This block is invisible
               transp_len = transp_len + clen
               normal_len = normal_len - clen
               local tr = transp_len / (normal_len + transp_len)
